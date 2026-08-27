@@ -53,15 +53,22 @@ def build_queries(excel):
     return queries # List of queries
 
 def search_profile(engine: DDGS, query: str):
+    backends = ["bing", "brave", "duckduckgo", "google", "mojeek", "startpage", "yandex", "yahoo"]
+    backendIdx = 0
+
     print(f"query: {query}")
     time.sleep(random.uniform(5.0, 10.0)) # Jitter
 
-    for attempt in range(10):
+    for attempt in range(100):
         try:
-            results = list(engine.text(query, max_results=5))
+            print(f"backend: {backends[backendIdx]}")
+            results = list(engine.text(query, max_results=5, backends=backends[backendIdx]))
             return results
         except DDGSException as e:
             print(f"Error searching for {query}: {e}")
+            backendIdx += 1
+            if backendIdx >= len(backends): backendIdx = 0
+            print(f"Swi: {backends[backendIdx]}")
             time.sleep(10 * (2**attempt))
     return []
 
