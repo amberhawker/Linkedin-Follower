@@ -1,9 +1,10 @@
 from ddgs import DDGS
+from ddgs.exceptions import DDGSException, RatelimitException
 from typing import List, Dict, Optional
 import pandas as pd
 from collections import defaultdict
 import sys
-import time
+import time, random
 
 ORG_NAME = "Organization"
 SKIP_COL = "Phone"
@@ -16,7 +17,7 @@ results = {}
 def import_data():
     unenriched = pd.read_excel("data/unenriched.xlsx")
     print(unenriched)
-    dataset = defaultdict(set)
+    dataset = defaultdict(set) # form of: {"company": (unique1, unique2, unique3), ...}
     for idx, row in unenriched.iterrows():
 
         org = row[ORG_NAME]
@@ -42,23 +43,27 @@ def import_data():
     print(dataset)
     return dataset
 
-def build_queries():
+def build_queries(excel):
     queries = []
-    for name, org in zip(names, orgs):
-        if not name or not org:
-            continue
-        query = f'site:linkedin.com/in/ "{name}" "{org}"'
-        queries.append(query)
-    return queries
+
+    for org in excel.keys():
+        names = excel[org]
+        for name in names:
+            queries.append(f'site:linkedin.com/in/ "{name}" "{org}"')
+    return queries # List of queries
 
 def search_profile(engine: DDGS, query: str):
     print(f"query: {query}")
-    try:
-        results = list(engine.text(query, max_results=3))
-        return results
-    except Exception as e:
-        print(f"Error searching for {query}: {e}")
-        return []
+    time.sleep(random.uniform(5.0, 10.0)) # Jitter
+
+    for attempt in range(10):
+        try:
+            results = list(engine.text(query, max_results=5))
+            return results
+        except DDGSException as e:
+            print(f"Error searching for {query}: {e}")
+            time.sleep(10 * (2**attempt))
+    return []
 
 def print_results(queries: List):
     for query_name in queries:
@@ -73,14 +78,17 @@ def print_results(queries: List):
             print(f"  URL: {item.get('href')}")
             print(f"  Snippet: {item.get('body')}")
 
+
 def main() -> None:
-    import_data()
+    excel = import_data()
 
     engine = DDGS()
-    #queries = build_queries()
+    queries = build_queries(excel) # Returns List object
 
-    #for query in queries:
-    #    results[query] = search_profile(engine, query)
+    for query in queries:
+        results[query] = search_profile(engine, query)
+        for result in results[query]:
+            print(f'Will search for: {result}')
 
     #print_results(queries)
 
