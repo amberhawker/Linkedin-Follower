@@ -16,7 +16,6 @@ results = {}
 
 def import_data():
     unenriched = pd.read_excel("data/unenriched.xlsx")
-    print(unenriched)
     dataset = defaultdict(set) # form of: {"company": (unique1, unique2, unique3), ...}
     for idx, row in unenriched.iterrows():
 
@@ -40,7 +39,6 @@ def import_data():
                 if "nan" == str(nayme): continue
 
                 dataset[org].add(nayme.strip())
-    print(dataset)
     return dataset
 
 def build_queries(excel):
@@ -59,10 +57,10 @@ def search_profile(engine: DDGS, query: str):
     print(f"query: {query}")
     time.sleep(random.uniform(5.0, 10.0)) # Jitter
 
-    for attempt in range(100):
+    for attempt in range(8):
         try:
             print(f"backend: {backends[backendIdx]}")
-            results = list(engine.text(query, max_results=5, backends=backends[backendIdx]))
+            results = list(engine.text(query, max_results=3, backends=backends[backendIdx]))
             return results
         except DDGSException as e:
             print(f"Error searching for {query}: {e}")
@@ -89,7 +87,7 @@ def print_results(queries: List):
 def main() -> None:
     excel = import_data()
 
-    engine = DDGS()
+    engine = DDGS(timeout=10)
     queries = build_queries(excel) # Returns List object
 
     for query in queries:
