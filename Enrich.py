@@ -7,6 +7,7 @@ import sys
 import time, random
 import requests as rq
 import os
+from playwright.sync_api import sync_playwright
 
 HATZ_API_URL = "https://ai.hatz.ai/v1/chat/completions"
 HATZ_API_KEY = os.environ.get("HATZ_API_KEY", "")  # Set your key in the HATZ_API_KEY env var
@@ -147,6 +148,7 @@ def chud_ai(search_results: List, person_name: str = "", org_name: str = "") -> 
         return None
 
 def main() -> None:
+    '''
     excel = import_data()
 
     engine = DDGS(timeout=10)
@@ -162,6 +164,19 @@ def main() -> None:
             print(chosen_url)
 
     #print_results(queries)
+    '''
+    url = "https://ca.linkedin.com/"
+    with sync_playwright() as p:
+        context = p.chromium.launch_persistent_context(
+            user_data_dir="/Users/cmitamber/Library/Application Support/Google/Chrome",
+            channel="chrome", headless=False,
+            args=["--profile-directory=Profile 1"])
+        time.sleep(2)
+        page = context.pages[0] if context.pages else context.new_page()
+        time.sleep(2)
+        page.goto(url, wait_until="domcontentloaded")
+        print(page.title())
+        time.sleep(100)
 
 if __name__ == "__main__":
     main()
