@@ -1,6 +1,7 @@
 import time, random
 import os, csv
 import asyncio
+import json
 
 import requests as rq
 from pathlib import Path
@@ -74,8 +75,8 @@ def build_queries(excel):
                 print(f"Removed '{done_name}' from list of users to search for")
                 excel[org].discard(done_name)
         for name in names:
-            dataset[org].append([name, f'site:linkedin.com/in/ "{name}" {org}'])
-            print(dataset[org])
+            #dataset[org].append([name, f'site:linkedin.com/in/ "{name}" {org}'])
+            dataset[org].append([name, f'linkedin {name} {org}'])
     return dataset # List of queries
 
 def search_profile(engine: DDGS, query: str):
@@ -86,12 +87,13 @@ def search_profile(engine: DDGS, query: str):
     print(f"query: {query}")
     time.sleep(random.uniform(1.5, 3.0)) # Jitter
 
-    for attempt in range(8):
+    for attempt in range(3):
         try:
             print(f"backend: {backends[backendIdx]}")
             results = list(engine.text(query, max_results=5, backends=backends[backendIdx]))
             return results
         except DDGSException as e:
+            engine = DDGS(timeout=10)
             print(f"Error searching for {query}: {e}")
             backendIdx += 1
             if backendIdx >= len(backends): backendIdx = 0
@@ -244,7 +246,19 @@ def write_succeeded(names):
         for item in names:
             writer.writerow([item])
 
+def cache_result(url, name):
+    file = Path("./data/urlcache.json")
+    cache = json.loads(file.read_text()) if file.exists() else {}
+    cache[url] = name
+    file.write_text(json.dumps(cache, indent=2))
 
+def check_cache(name):
+    file = Path("./data/urlcache.json")
+    cache = json.loads(file.read_text()) if file.exists() else {}
+    for guy in cache:
+        if guy == name: return True
+    return False
+    
 def main() -> None:
     excel = import_data()
     print("Data imported from sheet.")
@@ -265,6 +279,7 @@ def main() -> None:
             print(chosen_url)
             if chosen_url:
                 chosen_urls[chosen_url] = name
+                cache_result(chosen_url, name)
 
     connected = asyncio.run(browser_time(chosen_urls))
     print(f"Succeeded on: {connected}")
