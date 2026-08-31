@@ -182,15 +182,25 @@ async def browser_time(url_list):
         try:
             pages = await browser.context.pages()
             page = pages[0] if pages else await browser.context.new_page()
-
+            counter = 0
             for url in url_list.keys():
+                if counter % 20 = 0:
+                    print("Sleeping for 1 day!!!!")
+                    asyncio.sleep(86400)
                 print(f"Navigating to {url}...", flush=True)
                 await page.goto(url)
                 asyncio.sleep(5)
                 attempts = 0
                 while True:
                     if attempts >= 10: print(f"URL: {url}, Name: {url_list[url]} has FAILED.")
-                    observe = await stagehand.observe(f"Verify that the Linkedin profile has a Connect option available. Return where we can execute the button to connect with the user. If it is not available, return what actions must be completed in order to navigate to the url: {url} and connect with the user. If it asks for a note to connect to the user, send the request without a note. If the connect button is available, make sure to include in the action to click the send without a note button, in case it comes up. If we have already connected with the user, please return no actions. If there is a problem that needs to be solved in order to get to the follow page, please suggest a solution. Do not give up and return empty options if you are not sure that the user has been connected with. Make sure to keep in mind that a popup may be on-screen, that could be blocking us from clicking icons items behind it.")
+                    observe = await stagehand.observe(
+                        f'find the button to connect with this profile. prioritize:
+                        1. close or dismiss button if a blocking modal or popup overlay is visible
+                        2. direct "connect" button in the profile header
+                        3. "more" or "..." button in the profile header if connect is hidden in the menu
+                        4. "send without a note" or "send now" button if a connection note dialog is open
+                        ignore if the profile is already a 1st-degree connection or connection request is pending'
+                    )
                     print(f"Observe returned: {observe.data}")
                     if observe.data == []:
                         success_list.append(url_list[url])
