@@ -259,9 +259,7 @@ def check_cache(name):
     cache = json.loads(file.read_text()) if file.exists() else {} #url: name
 
     inverted = {v: k for k, v in cache.items()} # name: url
-    if name in inverted:
-        return inverted[name]
-    return None
+    return inverted.get(name)
     
     return None
     
