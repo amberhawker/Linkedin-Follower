@@ -198,7 +198,9 @@ async def browser_time(url_list):
                 await asyncio.sleep(5)
                 attempts = 0
                 while True:
-                    if attempts >= 10: print(f"URL: {url}, Name: {url_list[url]} has FAILED.")
+                    if attempts >= 10:
+                        print(f"URL: {url}, Name: {url_list[url]} has FAILED.")
+                        break
                     observe = await stagehand.observe(
                         f'''find the button to connect with this profile. prioritize:
                         1. close or dismiss button if a blocking modal or popup overlay is visible
@@ -254,10 +256,14 @@ def cache_result(url, name):
 
 def check_cache(name):
     file = Path("./data/urlcache.json")
-    cache = json.loads(file.read_text()) if file.exists() else {}
-    for guy in cache:
-        if guy == name: return True
-    return False
+    cache = json.loads(file.read_text()) if file.exists() else {} #url: name
+
+    inverted = {v: k for k, v in cache.items()} # name: url
+    if name in inverted:
+        return inverted[name]
+    return None
+    
+    return None
     
 def main() -> None:
     excel = import_data()
@@ -273,13 +279,19 @@ def main() -> None:
         for guy in queries[org]:
             name = guy[0]
             query = guy[1]
-            results[query] = search_profile(engine, query)
-            print(f"Searched for: {query}")
-            chosen_url = chud_ai(results[query], person_name=name, org_name=org)
-            print(chosen_url)
-            if chosen_url:
-                chosen_urls[chosen_url] = name
-                cache_result(chosen_url, name)
+            cache_url = check_cache(name)
+            if cache_url:
+                print(f"HIT cache for: {name}")
+                chosen_urls[cache_url] = name
+            else:
+                print(f"MISS cache for: {name}")
+                results[query] = search_profile(engine, query)
+                print(f"Searched for: {query}")
+                chosen_url = chud_ai(results[query], person_name=name, org_name=org)
+                print(chosen_url)
+                if chosen_url:
+                    chosen_urls[chosen_url] = name
+                    cache_result(chosen_url, name)
 
     connected = asyncio.run(browser_time(chosen_urls))
     print(f"Succeeded on: {connected}")
