@@ -192,10 +192,10 @@ async def browser_time(url_list):
             for url in url_list.keys():
                 if counter % 20 == 0:
                     print("Sleeping for 1 day!!!!")
-                    asyncio.sleep(86400)
+                    await asyncio.sleep(86400)
                 print(f"Navigating to {url}...", flush=True)
                 await page.goto(url)
-                asyncio.sleep(5)
+                await asyncio.sleep(5)
                 attempts = 0
                 while True:
                     if attempts >= 10: print(f"URL: {url}, Name: {url_list[url]} has FAILED.")
