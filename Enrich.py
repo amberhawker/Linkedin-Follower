@@ -7,19 +7,25 @@ import sys
 import time, random
 import requests as rq
 import os
-from playwright.sync_api import sync_playwright
+import asyncio
+from dotenv import load_dotenv
+from stagehand import Stagehand, local_browser
+import csv
+from pathlib import Path
+
+load_dotenv()
 
 HATZ_API_URL = "https://ai.hatz.ai/v1/chat/completions"
-HATZ_API_KEY = os.environ.get("HATZ_API_KEY", "")  # Set your key in the HATZ_API_KEY env var
+HATZ_API_KEY = os.environ.get("HATZ_API_KEY", "")
 HATZ_MODEL = "gpt-4o"
+BROWSERBASE_API_KEY = os.environ.get("BROWSERBASE_API_KEY", "")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 
 ORG_NAME = "Organization"
 SKIP_COL = "Phone"
 BREAK_NAME = "Data Confidence"
 
-names = ["Todd Chapman", "Amber Hawker"]
-orgs = ["CMIT Solutions", "Okanagan Marine Robotics"]
-results = {}
+SUCEED_LIST = "./data/suceedlist.csv"
 
 def import_data():
     unenriched = pd.read_excel("data/unenriched.xlsx")
@@ -48,12 +54,22 @@ def import_data():
                 dataset[org].add(nayme.strip())
     return dataset
 
+def name_already_added(name):
+    with open(Path(SUCEED_LIST), "r", newline="", encoding="utf-8") as f:
+        reader = csv.reader(f)
+        for row in reader:
+            if name in row: return True
+    return False
+
 def build_queries(excel):
     # form of: {"company": [[name, query], []]...}
     dataset = defaultdict(list)
     for org in excel.keys():
         names = excel[org]
         for name in names:
+            if(name_already_added(name)):
+                excel[org].discard(name)
+                continue
             dataset[org].append([name, f'site:linkedin.com/in/ "{name}" {org}'])
             print(dataset[org])
     return dataset # List of queries
@@ -147,14 +163,82 @@ def chud_ai(search_results: List, person_name: str = "", org_name: str = "") -> 
         print(f"Hatz AI error: {e}")
         return None
 
+async def browser_time(url_list):
+    success_list = []
+
+    print("Launching local Chrome browser...", flush=True)
+    try:
+        browser = await local_browser.launch(headless=False, user_data_dir="./data/chrome_profile")
+    except Exception as e:
+        print(f"Failed to launch Chrome: {e}", flush=True)
+        return
+
+    try:
+        print("Creating Stagehand session...", flush=True)
+        stagehand = await Stagehand.create(browser=browser, api_key=BROWSERBASE_API_KEY,
+                                           model_api_key=GEMINI_API_KEY,
+                                           model="google/gemini-flash-lite-latest")
+        print("Opened stagehand & browser", flush=True)
+        try:
+            pages = await browser.context.pages()
+            page = pages[0] if pages else await browser.context.new_page()
+
+            for url in url_list.keys():
+                print(f"Navigating to {url}...", flush=True)
+                await page.goto(url)
+                asyncio.sleep(5)
+                attempts = 0
+                while True:
+                    if attempts >= 10: print(f"URL: {url}, Name: {url_list[url]} has FAILED.")
+                    observe = await stagehand.observe(f"Verify that the Linkedin profile has a Connect option available. Return where we can execute the button to connect with the user. If it is not available, return what actions must be completed in order to navigate to the url: {url} and connect with the user. If it asks for a note to connect to the user, send the request without a note. If the connect button is available, make sure to include in the action to click the send without a note button, in case it comes up. If we have already connected with the user, please return no actions. If there is a problem that needs to be solved in order to get to the follow page, please suggest a solution. Do not give up and return empty options if you are not sure that the user has been connected with. Make sure to keep in mind that a popup may be on-screen, that could be blocking us from clicking icons items behind it.")
+                    print(f"Observe returned: {observe.data}")
+                    if observe.data == []:
+                        success_list.append(url_list[url])
+                        break
+                    try:
+                        result = None
+                        for action in observe.data:
+                            result = await stagehand.act(action)
+                        attempts += 1
+                    except Exception as e:
+                        print(f"Exception occured: {e}")
+                    finally:
+                        print(f"Action result: {result}", flush=True)
+                        time.sleep(10)
+
+        finally:
+            print("Closing stagehand", flush=True)
+            await stagehand.close()
+    except Exception as e:
+        print(f"Stagehand error: {e}", flush=True)
+    finally:
+        print("Closing browser", flush=True)
+        await browser.close()
+    return success_list
+
+def suceedlist_exists():
+    if Path(SUCEED_LIST).exists(): return True
+    else: return False
+
+def write_succeeded(names):
+    mode = None
+    if(suceedlist_exists()): mode = "a"
+    else: mode = "w"
+
+    with open(Path(SUCEED_LIST), mode, newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        for item in names:
+            writer.writerow([item])
+
+
 def main() -> None:
-    '''
     excel = import_data()
 
     engine = DDGS(timeout=10)
     queries = build_queries(excel) # Returns: {"company": [[name, query], []]...}
 
     results = {}
+    chosen_urls = {} # {url: name}
     for org in queries.keys():
         for guy in queries[org]:
             name = guy[0]
@@ -162,21 +246,12 @@ def main() -> None:
             results[query] = search_profile(engine, query)
             chosen_url = chud_ai(results[query], person_name=name, org_name=org)
             print(chosen_url)
+            if chosen_url:
+                chosen_urls[chosen_url] = name
 
-    #print_results(queries)
-    '''
-    url = "https://ca.linkedin.com/"
-    with sync_playwright() as p:
-        context = p.chromium.launch_persistent_context(
-            user_data_dir="/Users/cmitamber/Library/Application Support/Google/Chrome",
-            channel="chrome", headless=False,
-            args=["--profile-directory=Profile 1"])
-        time.sleep(2)
-        page = context.pages[0] if context.pages else context.new_page()
-        time.sleep(2)
-        page.goto(url, wait_until="domcontentloaded")
-        print(page.title())
-        time.sleep(100)
+    connected = asyncio.run(browser_time(chosen_urls))
+    print(f"Succeeded on: {connected}")
+    write_succeeded(connected)
 
 if __name__ == "__main__":
     main()
