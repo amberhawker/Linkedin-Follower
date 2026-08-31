@@ -1,17 +1,18 @@
-from ddgs import DDGS
-from ddgs.exceptions import DDGSException, RatelimitException
-from typing import List, Dict, Optional
-import pandas as pd
-from collections import defaultdict
-import sys
 import time, random
-import requests as rq
-import os
+import os, csv
 import asyncio
-from dotenv import load_dotenv
-from stagehand import Stagehand, local_browser
-import csv
+
+import requests as rq
 from pathlib import Path
+from dotenv import load_dotenv
+from typing import List, Optional
+from collections import defaultdict
+
+import pandas as pd
+from ddgs import DDGS
+from ddgs.exceptions import DDGSException
+from stagehand import Stagehand, local_browser
+
 
 load_dotenv()
 
@@ -54,22 +55,25 @@ def import_data():
                 dataset[org].add(nayme.strip())
     return dataset
 
-def name_already_added(name):
+def get_finished_names():
+    names = []
     with open(Path(SUCEED_LIST), "r", newline="", encoding="utf-8") as f:
         reader = csv.reader(f)
         for row in reader:
-            if name in row: return True
-    return False
+            names.append(row[0])
+    return names
 
 def build_queries(excel):
     # form of: {"company": [[name, query], []]...}
     dataset = defaultdict(list)
     for org in excel.keys():
         names = excel[org]
+        done_names = get_finished_names()
+        for done_name in done_names:
+            if done_name in names:
+                print(f"Removed '{done_name}' from list of users to search for")
+                excel[org].discard(done_name)
         for name in names:
-            if(name_already_added(name)):
-                excel[org].discard(name)
-                continue
             dataset[org].append([name, f'site:linkedin.com/in/ "{name}" {org}'])
             print(dataset[org])
     return dataset # List of queries
@@ -184,7 +188,7 @@ async def browser_time(url_list):
             page = pages[0] if pages else await browser.context.new_page()
             counter = 0
             for url in url_list.keys():
-                if counter % 20 = 0:
+                if counter % 20 == 0:
                     print("Sleeping for 1 day!!!!")
                     asyncio.sleep(86400)
                 print(f"Navigating to {url}...", flush=True)
@@ -194,12 +198,12 @@ async def browser_time(url_list):
                 while True:
                     if attempts >= 10: print(f"URL: {url}, Name: {url_list[url]} has FAILED.")
                     observe = await stagehand.observe(
-                        f'find the button to connect with this profile. prioritize:
+                        f'''find the button to connect with this profile. prioritize:
                         1. close or dismiss button if a blocking modal or popup overlay is visible
                         2. direct "connect" button in the profile header
                         3. "more" or "..." button in the profile header if connect is hidden in the menu
                         4. "send without a note" or "send now" button if a connection note dialog is open
-                        ignore if the profile is already a 1st-degree connection or connection request is pending'
+                        ignore if the profile is already a 1st-degree connection or connection request is pending'''
                     )
                     print(f"Observe returned: {observe.data}")
                     if observe.data == []:
@@ -243,9 +247,11 @@ def write_succeeded(names):
 
 def main() -> None:
     excel = import_data()
+    print("Data imported from sheet.")
 
     engine = DDGS(timeout=10)
     queries = build_queries(excel) # Returns: {"company": [[name, query], []]...}
+    print("Built queries.")
 
     results = {}
     chosen_urls = {} # {url: name}
@@ -254,6 +260,7 @@ def main() -> None:
             name = guy[0]
             query = guy[1]
             results[query] = search_profile(engine, query)
+            print(f"Searched for: {query}")
             chosen_url = chud_ai(results[query], person_name=name, org_name=org)
             print(chosen_url)
             if chosen_url:
