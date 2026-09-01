@@ -100,7 +100,7 @@ def search_profile(engine: DDGS, query: str):
             backendIdx += 1
             if backendIdx >= len(backends): backendIdx = 0
             print(f"Swi: {backends[backendIdx]}")
-            sleep = min(10 * (2**attempt), 40)
+            sleep = min(10 * (2**attempt), 30)
             print(f"Sleep for: {sleep}")
             time.sleep(sleep)
     return []
@@ -295,7 +295,7 @@ def main() -> None:
                     chosen_urls[chosen_url] = name
                     cache_result(chosen_url, name)
                 else:
-                    chosen_urls[str(uuid.uuid4[:8])] = name
+                    chosen_urls[str(uuid.uuid4())] = name
 
     connected = asyncio.run(browser_time(chosen_urls))
     print(f"Succeeded on: {connected}")
