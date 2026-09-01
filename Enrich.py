@@ -80,25 +80,25 @@ def build_queries(excel):
     return dataset # List of queries
 
 def search_profile(engine: DDGS, query: str):
-    #backends = ["bing", "brave", "duckduckgo", "google", "mojeek", "startpage", "yandex", "yahoo"]
-    backends = ["bing", "brave", "duckduckgo", "google", "yandex", "yahoo"]
+    #backends = ["bing", "brave", "duckduckgo", "google", "mojeek", "startpage", "yandex", "yahoo"] Bing sucks shit
+    backends = ["brave", "duckduckgo", "google", "yandex", "yahoo"]
     backendIdx = 0
 
     print(f"query: {query}")
     time.sleep(random.uniform(1.5, 3.0)) # Jitter
 
-    for attempt in range(3):
+    for attempt in range(5):
         try:
             print(f"backend: {backends[backendIdx]}")
             results = list(engine.text(query, max_results=5, backends=backends[backendIdx]))
-            return results
+            return [ r for r in results if "linkedin.com/in/" in r.get("href", "")] # Filter to only profiles
         except DDGSException as e:
             engine = DDGS(timeout=10)
             print(f"Error searching for {query}: {e}")
             backendIdx += 1
             if backendIdx >= len(backends): backendIdx = 0
             print(f"Swi: {backends[backendIdx]}")
-            sleep = min(10 * (2**attempt), 60)
+            sleep = min(10 * (2**attempt), 40)
             print(f"Sleep for: {sleep}")
             time.sleep(sleep)
     return []
@@ -131,11 +131,11 @@ def chud_ai(search_results: List, person_name: str = "", org_name: str = "") -> 
         candidates_text += f"\n[{i}] Title: {title}\n    URL: {url}\n    Snippet: {snippet}\n"
 
     system_prompt = (
-        "You are a research assistant helping find the correct LinkedIn profile URL for a person. "
-        "Given a list of search results, pick the single best matching LinkedIn profile URL "
-        "for the specified person and organization. "
-        "If none of the results are a good match, respond with exactly: none\n"
-        "Otherwise respond with ONLY the URL of the best matching result — nothing else."
+        "You are a strict data-matching engine that identifies the correct personal LinkedIn profile URL for an individual.\n"
+        "Rules:\n"
+        "1. The URL MUST be a personal LinkedIn profile containing '/in/'. Never return company pages, posts, or non-LinkedIn domains.\n"
+        "2. If none of the candidates clearly match the person and their organization, output exactly: none\n"
+        "3. Output MUST be strictly raw plain text (the single URL string or 'none'). No markdown, no backticks, no quotes, no extra whitespace, no conversational text."
     )
 
     user_message = (
