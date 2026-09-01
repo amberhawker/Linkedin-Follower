@@ -2,6 +2,8 @@ import time, random
 import os, csv
 import asyncio
 import json
+import threading
+import uuid
 
 import requests as rq
 from pathlib import Path
@@ -190,7 +192,8 @@ async def browser_time(url_list):
             page = pages[0] if pages else await browser.context.new_page()
             counter = 0
             for url in url_list.keys():
-                if counter % 20 == 0:
+                if "linkedin/in/" not in url: print(f"Skipping URL: {url}")
+                if counter % 20 == 0 and counter != 0:
                     print("Sleeping for 1 day!!!!")
                     await asyncio.sleep(86400)
                 print(f"Navigating to {url}...", flush=True)
@@ -283,6 +286,7 @@ def main() -> None:
                 chosen_urls[cache_url] = name
             else:
                 print(f"MISS cache for: {name}")
+
                 results[query] = search_profile(engine, query)
                 print(f"Searched for: {query}")
                 chosen_url = chud_ai(results[query], person_name=name, org_name=org)
@@ -290,6 +294,8 @@ def main() -> None:
                 if chosen_url:
                     chosen_urls[chosen_url] = name
                     cache_result(chosen_url, name)
+                else:
+                    chosen_urls[str(uuid.uuid4[:8])] = name
 
     connected = asyncio.run(browser_time(chosen_urls))
     print(f"Succeeded on: {connected}")
