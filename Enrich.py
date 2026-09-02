@@ -25,6 +25,13 @@ HATZ_MODEL = "gpt-4o"
 BROWSERBASE_API_KEY = os.environ.get("BROWSERBASE_API_KEY", "")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 
+LLM_VALUES = [
+    "google/gemini-flash-lite-latest",
+    "google/gemini-flash-latest"
+    "google/gemini-3.5-flash",
+    "google/gemini-3.6-flash",
+    ]
+
 ORG_NAME = "Organization"
 SKIP_COL = "Phone"
 BREAK_NAME = "Data Confidence"
@@ -171,7 +178,7 @@ def chud_ai(search_results: List, person_name: str = "", org_name: str = "") -> 
         print(f"Hatz AI error: {e}")
         return None
 
-async def browser_time(url_list):
+async def browser_time(url_list, llm):
     success_list = []
 
     print("Launching local Chrome browser...", flush=True)
@@ -185,7 +192,7 @@ async def browser_time(url_list):
         print("Creating Stagehand session...", flush=True)
         stagehand = await Stagehand.create(browser=browser, api_key=BROWSERBASE_API_KEY,
                                            model_api_key=GEMINI_API_KEY,
-                                           model="google/gemini-flash-lite-latest")
+                                           model=llm)
         print("Opened stagehand & browser", flush=True)
         try:
             pages = await browser.context.pages()
@@ -204,28 +211,38 @@ async def browser_time(url_list):
                     if attempts >= 10:
                         print(f"URL: {url}, Name: {url_list[url]} has FAILED.")
                         break
-                    observe = await stagehand.observe(
-                        f'''find the button to connect with this profile. prioritize:
-                        1. close or dismiss button if a blocking modal or popup overlay is visible
-                        2. direct "connect" button in the profile header
-                        3. "more" or "..." button in the profile header if connect is hidden in the menu
-                        4. "send without a note" or "send now" button if a connection note dialog is open
-                        ignore if the profile is already a 1st-degree connection or connection request is pending'''
-                    )
-                    print(f"Observe returned: {observe.data}")
-                    if observe.data == []:
-                        success_list.append(url_list[url])
+
+                    await stagehand.act("""
+                        goal: send a basic linkedin connection request to this profile
+
+                        strict rules & priorities:
+                        1. dismiss any blocking overlays, chat drawer popups, or cookie banners first
+                        2. do NOT click 'follow', 'message', 'pending', or 'endorse'
+                        3. look for a primary 'connect' button in the main profile intro section
+                        4. if no direct 'connect' button exists, click 'more' or '...' in the profile header, wait for the dropdown menu, and click 'connect' from the menu list
+                        5. if a modal opens asking to add a note ('you can customize this invitation'), click 'send without a note' (or 'send' / 'send now'). do not type anything
+                        6. if a popup appears stating the weekly invitation limit has been reached or requiring an email address to connect, click 'cancel' or 'close' and stop immediately
+                        7. if the profile already shows 'pending' or '1st', take no action
+                        """)
+
+                    status = await stagehand.extract({
+                        "instruction": "determine the connection status of this profile right now",
+                        "schema": {
+                            "is_connected_or_pending": "boolean (true if button now says Pending, 1st, or invitation was sent)",
+                            "hit_limit": "boolean (true if weekly invitation limit modal or email verification popped up)",
+                            "action_taken": "string (sent_request, already_connected, hit_limit, or failed)"
+                        }
+                    })
+
+                    attempts += 1
+                    if status.data.get("hit_limit"):
+                        print("hit weekly limit / email requirement, stopping run")
+                        return success_list
+                    elif status.data.get("is_connected_or_pending"):
+                        print("connection request sent successfully")
+                        success_list.append(url)
+                        counter += 1
                         break
-                    try:
-                        result = None
-                        for action in observe.data:
-                            result = await stagehand.act(action)
-                        attempts += 1
-                    except Exception as e:
-                        print(f"Exception occured: {e}")
-                    finally:
-                        print(f"Action result: {result}", flush=True)
-                        time.sleep(10)
 
         finally:
             print("Closing stagehand", flush=True)
@@ -235,7 +252,7 @@ async def browser_time(url_list):
     finally:
         print("Closing browser", flush=True)
         await browser.close()
-    return success_list
+        return success_list
 
 def suceedlist_exists():
     if Path(SUCEED_LIST).exists(): return True
@@ -287,19 +304,23 @@ def main() -> None:
             else:
                 print(f"MISS cache for: {name}")
 
-                results[query] = search_profile(engine, query)
-                print(f"Searched for: {query}")
-                chosen_url = chud_ai(results[query], person_name=name, org_name=org)
-                print(chosen_url)
+                chosen_url = None
                 if chosen_url:
                     chosen_urls[chosen_url] = name
                     cache_result(chosen_url, name)
                 else:
                     chosen_urls[str(uuid.uuid4())] = name
 
-    connected = asyncio.run(browser_time(chosen_urls))
-    print(f"Succeeded on: {connected}")
-    write_succeeded(connected)
+    index = 0
+    while True:
+        if(index < len(LLM_VALUES)):
+            connected = asyncio.run(browser_time(chosen_urls, LLM_VALUES[index])) # returns list of urls
+            print(f"Succeeded on: {connected}")
+            write_succeeded(connected)
+            index += 1
+            for url in connected:
+                if chosen_urls.get(url) is None:
+                    chosen_urls.pop(url)
 
 if __name__ == "__main__":
     main()
