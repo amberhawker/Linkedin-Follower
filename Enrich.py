@@ -464,7 +464,7 @@ async def browser_time(url_list):
                 print(f"Reformatted url: {target_url}")
                 print(f"Navigating to {target_url}...", flush=True)
                 await page.goto(target_url)
-                await asyncio.sleep(5)  # let LinkedIn's SPA fully settle
+                await asyncio.sleep(2)  # let LinkedIn's SPA fully settle
                 attempts = 0
                 while True:
                     if attempts >= 10:
@@ -580,17 +580,16 @@ def main() -> None:
                     cache_result(chosen_url, name)
                 else:
                     chosen_urls[str(uuid.uuid4())] = name
-    while chosen_urls:
-        connected = asyncio.run(browser_time(chosen_urls)) # returns list of urls
-        print(f"Succeeded on: {connected}")
-        if not connected:
-            print("No further connections completed on this run.")
-            break
-        for url in connected:
-            if url in chosen_urls:
-                print(f"Removing {url} from the search")
-                chosen_urls.pop(url)
-    print("All done! Big W gaming.")
+
+    connected = asyncio.run(browser_time(chosen_urls)) # returns list of urls
+    print(f"Succeeded on: {connected}")
+    if not connected:
+        print("No further connections completed on this run.")
+    for url in connected:
+        if url in chosen_urls:
+            print(f"Removing {url} from the search")
+            chosen_urls.pop(url)
+    print(connected)
 
 if __name__ == "__main__":
     main()
