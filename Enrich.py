@@ -4,6 +4,7 @@ import asyncio
 import json
 import threading
 import uuid
+import re
 
 import requests as rq
 from pathlib import Path
@@ -12,31 +13,51 @@ from typing import List, Optional
 from collections import defaultdict
 
 import pandas as pd
+import openai
 from ddgs import DDGS
 from ddgs.exceptions import DDGSException
 from stagehand import Stagehand, local_browser
+from pydantic import BaseModel, Field
+
+from stagehand._generated.models import (
+    LLMMessageGenerateParams,
+    LLMMessageGenerateResult,
+    LLMStructuredGenerateParams,
+    LLMStructuredGenerateResult,
+    LLMTextContent,
+    LLMUsage,
+    LLMRole,
+    LLMToolUseContent,
+    LLMMessageContentBlock,
+)
+
+
+class ConnectionStatus(BaseModel):
+    """Schema for LinkedIn connection status extraction."""
+    is_connected_or_pending: bool = Field(description="true if button now says Pending, 1st, or invitation was sent")
+    hit_limit: bool = Field(description="true if weekly invitation limit modal or email verification popped up")
+    action_taken: str = Field(description="sent_request, already_connected, hit_limit, or failed")
 
 
 load_dotenv()
 
 HATZ_API_URL = "https://ai.hatz.ai/v1/chat/completions"
 HATZ_API_KEY = os.environ.get("HATZ_API_KEY", "")
-HATZ_MODEL = "gpt-4o"
+HATZ_MODEL = "anthropic.claude-haiku-4-5"
 BROWSERBASE_API_KEY = os.environ.get("BROWSERBASE_API_KEY", "")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
-
-LLM_VALUES = [
-    "google/gemini-flash-lite-latest",
-    "google/gemini-flash-latest"
-    "google/gemini-3.5-flash",
-    "google/gemini-3.6-flash",
-    ]
 
 ORG_NAME = "Organization"
 SKIP_COL = "Phone"
 BREAK_NAME = "Data Confidence"
 
 SUCEED_LIST = "./data/suceedlist.csv"
+
+_hatz_client = openai.AsyncOpenAI(
+    base_url=HATZ_API_URL.removesuffix("/chat/completions"),  # wants …/v1
+    api_key=HATZ_API_KEY,
+    default_headers={"X-API-Key": HATZ_API_KEY},
+)
 
 def import_data():
     unenriched = pd.read_excel("data/unenriched.xlsx")
@@ -178,7 +199,243 @@ def chud_ai(search_results: List, person_name: str = "", org_name: str = "") -> 
         print(f"Hatz AI error: {e}")
         return None
 
-async def browser_time(url_list, llm):
+    # Turns stagehand openai calls into hatz endpoint stuff ... doozey if i say so myself
+
+def _stagehand_messages_to_openai(messages):
+    """Convert Stagehand LLMMessage list → OpenAI messages list."""
+    out = []
+    for msg in messages:
+        content_blocks = msg.content if isinstance(msg.content, list) else [msg.content]
+        parts = []
+        for block in content_blocks:
+            # Unwrap RootModel wrappers
+            b = block.root if hasattr(block, "root") else block
+            if hasattr(b, "type"):
+                if b.type == "text":
+                    parts.append({"type": "text", "text": b.text})
+                elif b.type == "image":
+                    parts.append({
+                        "type": "image_url",
+                        "image_url": {"url": f"data:{b.mime_type};base64,{b.data}"},
+                    })
+                elif b.type == "tool_use":
+                    # Tool-use content from assistant turns needs special handling
+                    parts.append({"type": "text", "text": json.dumps({"tool_use": b.name, "id": b.id, "input": {k: v.root if hasattr(v, "root") else v for k, v in b.input.items()}})})
+                elif b.type == "tool_result":
+                    result_text = ""
+                    for tb in (b.content or []):
+                        tb_inner = tb.root if hasattr(tb, "root") else tb
+                        if hasattr(tb_inner, "text"):
+                            result_text += tb_inner.text
+                    parts.append({"type": "text", "text": result_text})
+            else:
+                parts.append({"type": "text", "text": str(b)})
+        if len(parts) == 1 and parts[0]["type"] == "text":
+            out.append({"role": msg.role.value, "content": parts[0]["text"]})
+        else:
+            out.append({"role": msg.role.value, "content": parts})
+    return out
+
+
+async def hatz_llm_generate(params):
+    """LLMGenerateCallback: handles both structured and message generate."""
+    is_structured = isinstance(params, LLMStructuredGenerateParams)
+
+    openai_messages = []
+    if params.system_prompt:
+        openai_messages.append({"role": "system", "content": params.system_prompt})
+    openai_messages.extend(_stagehand_messages_to_openai(params.messages))
+
+    kwargs = {
+        "model": HATZ_MODEL,
+        "messages": openai_messages,
+    }
+    if params.temperature is not None:
+        kwargs["temperature"] = params.temperature
+    if params.stop_sequences:
+        kwargs["stop"] = params.stop_sequences
+
+    if is_structured and params.response_format:
+        rf = params.response_format
+        schema_dict = _field_schema_to_dict(rf.schema_) if rf.schema_ else {}
+        schema_instruction = (
+            "IMPORTANT: Return a single, valid JSON object strictly adhering to this schema:\n"
+            f"{json.dumps(schema_dict, indent=2)}\n\n"
+            "Rules:\n"
+            "- Output MUST be pure, raw JSON starting with '{' and ending with '}'.\n"
+            "- Do NOT wrap the JSON in markdown code blocks like ```json or ```.\n"
+            "- Do NOT include any preamble, commentary, or extra text."
+        )
+        if openai_messages:
+            last_msg = openai_messages[-1]
+            if isinstance(last_msg.get("content"), str):
+                last_msg["content"] += "\n\n" + schema_instruction
+            elif isinstance(last_msg.get("content"), list):
+                last_msg["content"].append({"type": "text", "text": schema_instruction})
+        else:
+            openai_messages.append({"role": "system", "content": schema_instruction})
+        kwargs["response_format"] = {"type": "json_object"}
+    elif not is_structured and hasattr(params, "tools") and params.tools:
+        kwargs["tools"] = [
+            {
+                "type": "function",
+                "function": {
+                    "name": t.name,
+                    **({"description": t.description} if t.description else {}),
+                    "parameters": {
+                        "type": t.input_schema.type,
+                        **({"properties": {
+                            k: {ik: (_field_schema_to_dict(iv) if hasattr(iv, "root") else iv) for ik, iv in v.items()}
+                            for k, v in t.input_schema.properties.items()
+                        }} if t.input_schema.properties else {}),
+                        **({"required": t.input_schema.required} if t.input_schema.required else {}),
+                    },
+                },
+            }
+            for t in params.tools
+        ]
+
+    try:
+        response = await _hatz_client.chat.completions.create(**kwargs)
+    except Exception as e:
+        print(f"Hatz LLM error: {e}", flush=True)
+        raise
+
+    choice = response.choices[0]
+    message = choice.message
+    usage_data = response.usage
+
+    usage = LLMUsage(
+        input_tokens=getattr(usage_data, "prompt_tokens", None) or 0,
+        output_tokens=getattr(usage_data, "completion_tokens", None) or 0,
+        total_tokens=getattr(usage_data, "total_tokens", None) or 0,
+    )
+
+    text_content = message.content or ""
+    stop_reason = choice.finish_reason or "stop"
+
+    if is_structured:
+        rf = params.response_format
+        schema_dict = _field_schema_to_dict(rf.schema_) if (rf and rf.schema_) else {}
+        structured = _parse_json_from_llm(text_content)
+        fallback = _build_schema_fallback(schema_dict)
+
+        if not isinstance(structured, dict):
+            print(f"[Stagehand LLM] Note: Parsing '{rf.name if rf else 'unknown'}' as JSON failed. Raw: {text_content[:150]!r}. Using fallback.", flush=True)
+            structured = fallback
+        else:
+            for req_key in schema_dict.get("required", []):
+                if req_key not in structured:
+                    structured[req_key] = fallback.get(req_key)
+
+        return LLMStructuredGenerateResult(
+            role=LLMRole.assistant,
+            content=LLMTextContent(type="text", text=text_content),
+            stop_reason=stop_reason,
+            usage=usage,
+            output_format="json_schema",
+            structured_content=structured,
+        )
+    else:
+        # Check for tool calls in the response
+        content_blocks = []
+        if text_content:
+            content_blocks.append(
+                LLMMessageContentBlock(root=LLMTextContent(type="text", text=text_content))
+            )
+        if message.tool_calls:
+            for tc in message.tool_calls:
+                content_blocks.append(
+                    LLMMessageContentBlock(root=LLMToolUseContent(
+                        type="tool_use",
+                        id=tc.id,
+                        name=tc.function.name,
+                        input=json.loads(tc.function.arguments) if tc.function.arguments else {},
+                    ))
+                )
+        if not content_blocks:
+            content_blocks.append(
+                LLMMessageContentBlock(root=LLMTextContent(type="text", text=""))
+            )
+
+        return LLMMessageGenerateResult(
+            role=LLMRole.assistant,
+            content=content_blocks if len(content_blocks) > 1 else content_blocks[0].root,
+            stop_reason=stop_reason,
+            usage=usage,
+            output_format="text",
+        )
+
+
+def _field_schema_to_dict(val):
+    """Recursively convert FieldSchema RootModels to plain dicts."""
+    if hasattr(val, "root"):
+        val = val.root
+    if isinstance(val, dict):
+        return {k: _field_schema_to_dict(v) for k, v in val.items()}
+    if isinstance(val, list):
+        return [_field_schema_to_dict(v) for v in val]
+    return val
+
+
+def _parse_json_from_llm(text: str):
+    """Extract and parse a JSON dict or list from model output, handling markdown code fences."""
+    if not text:
+        return None
+    cleaned = text.strip()
+    if "```" in cleaned:
+        m = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", cleaned)
+        if m:
+            cleaned = m.group(1).strip()
+    try:
+        data = json.loads(cleaned)
+        if isinstance(data, dict):
+            return data
+    except Exception:
+        pass
+
+    start = text.find("{")
+    end = text.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        try:
+            data = json.loads(text[start:end + 1])
+            if isinstance(data, dict):
+                return data
+        except Exception:
+            pass
+    return None
+
+
+def _build_schema_fallback(schema_dict: dict) -> dict:
+    """Construct a minimal valid object satisfying the given JSON schema."""
+    result = {}
+    props = schema_dict.get("properties", {})
+    for k, v in props.items():
+        t = v.get("type")
+        is_nullable = (
+            v.get("nullable", False)
+            or (isinstance(t, list) and "null" in t)
+            or any(sub.get("type") == "null" for sub in v.get("anyOf", []))
+            or any(sub.get("type") == "null" for sub in v.get("oneOf", []))
+        )
+        if is_nullable:
+            result[k] = None
+        elif t == "boolean":
+            result[k] = False
+        elif t == "string":
+            result[k] = ""
+        elif t in ("integer", "number"):
+            result[k] = 0
+        elif t == "array":
+            result[k] = []
+        elif t == "object":
+            result[k] = {}
+        else:
+            result[k] = None
+    return result
+
+
+async def browser_time(url_list):
     success_list = []
 
     print("Launching local Chrome browser...", flush=True)
@@ -190,60 +447,73 @@ async def browser_time(url_list, llm):
 
     try:
         print("Creating Stagehand session...", flush=True)
-        stagehand = await Stagehand.create(browser=browser, api_key=BROWSERBASE_API_KEY,
-                                           model_api_key=GEMINI_API_KEY,
-                                           model=llm)
+        stagehand = await Stagehand.create(
+            browser=browser,
+            model=hatz_llm_generate,
+        )
         print("Opened stagehand & browser", flush=True)
         try:
             pages = await browser.context.pages()
             page = pages[0] if pages else await browser.context.new_page()
-            counter = 0
-            for url in url_list.keys():
-                if "linkedin/in/" not in url: print(f"Skipping URL: {url}")
-                if counter % 20 == 0 and counter != 0:
-                    print("Sleeping for 1 day!!!!")
-                    await asyncio.sleep(86400)
-                print(f"Navigating to {url}...", flush=True)
-                await page.goto(url)
-                await asyncio.sleep(5)
+            for orig_url in list(url_list.keys()):
+                if not re.search(r"linkedin\.com/in/", orig_url, re.IGNORECASE):
+                    print(f"Skipping URL: {orig_url}")
+                    continue
+                name = url_list[orig_url]
+                target_url = re.sub(r"https?://[a-z]{2}\.linkedin\.com", "https://linkedin.com", orig_url)
+                print(f"Reformatted url: {target_url}")
+                print(f"Navigating to {target_url}...", flush=True)
+                await page.goto(target_url)
+                await asyncio.sleep(5)  # let LinkedIn's SPA fully settle
                 attempts = 0
                 while True:
                     if attempts >= 10:
-                        print(f"URL: {url}, Name: {url_list[url]} has FAILED.")
+                        print(f"URL: {target_url}, Name: {name} has FAILED.")
                         break
 
-                    await stagehand.act("""
-                        goal: send a basic linkedin connection request to this profile
+                    act_result = await stagehand.act("""
+                        goal: send a LinkedIn connection request to this profile.
 
-                        strict rules & priorities:
-                        1. dismiss any blocking overlays, chat drawer popups, or cookie banners first
-                        2. do NOT click 'follow', 'message', 'pending', or 'endorse'
-                        3. look for a primary 'connect' button in the main profile intro section
-                        4. if no direct 'connect' button exists, click 'more' or '...' in the profile header, wait for the dropdown menu, and click 'connect' from the menu list
-                        5. if a modal opens asking to add a note ('you can customize this invitation'), click 'send without a note' (or 'send' / 'send now'). do not type anything
-                        6. if a popup appears stating the weekly invitation limit has been reached or requiring an email address to connect, click 'cancel' or 'close' and stop immediately
-                        7. if the profile already shows 'pending' or '1st', take no action
+                        CRITICAL PRIORITIES (follow from top to bottom):
+                        1. IF AN INVITATION MODAL IS CURRENTLY OPEN ("You can customize this invitation" or "Add a note to your invitation"):
+                           - Click "Send without a note" (or "Send" / "Send now").
+                           - NEVER click "Cancel", the "X" close button, or click outside the modal.
+                           - Do NOT click "Add a note".
+                        2. IF A POPUP DEMANDS AN EMAIL ADDRESS OR SAYS WEEKLY INVITATION LIMIT REACHED:
+                           - Click "Cancel" or "Close".
+                        3. IF THE PROFILE ALREADY SHOWS "Pending" OR "1st":
+                           - Do not take any action.
+                        4. IF A DROPDOWN MENU IS CURRENTLY OPEN (from clicking 'More' or '...'):
+                           - Click the "Connect" option from the menu.
+                        5. IF A DIRECT "Connect" BUTTON IS VISIBLE IN THE MAIN PROFILE HEADER:
+                           - Click the primary "Connect" button.
+                        6. IF NO "Connect" BUTTON IS VISIBLE IN THE HEADER:
+                           - Click "More" or "..." in the profile header to open the dropdown menu.
+                        7. UNRELATED POPUPS ONLY:
+                           - If a bottom-right chat drawer or cookie banner is in the way, minimize or dismiss it. NEVER dismiss the invitation modal.
+                        8. DO NOT click "Follow", "Message", or "Endorse".
                         """)
+                    print(f"  [Attempt {attempts + 1}] Act: {act_result.data.action_description} (success={act_result.data.success})", flush=True)
 
-                    status = await stagehand.extract({
-                        "instruction": "determine the connection status of this profile right now",
-                        "schema": {
-                            "is_connected_or_pending": "boolean (true if button now says Pending, 1st, or invitation was sent)",
-                            "hit_limit": "boolean (true if weekly invitation limit modal or email verification popped up)",
-                            "action_taken": "string (sent_request, already_connected, hit_limit, or failed)"
-                        }
-                    })
+                    await asyncio.sleep(2)  # allow modal / button transition to render
+
+                    status = await stagehand.extract(
+                        "determine the connection status of this profile right now",
+                        ConnectionStatus,
+                    )
+                    print(f"  [Attempt {attempts + 1}] Status: connected/pending={status.data.is_connected_or_pending}, action={status.data.action_taken!r}, limit={status.data.hit_limit}", flush=True)
 
                     attempts += 1
-                    if status.data.get("hit_limit"):
+                    if status.data.hit_limit:
                         print("hit weekly limit / email requirement, stopping run")
                         return success_list
-                    elif status.data.get("is_connected_or_pending"):
-                        print("connection request sent successfully")
-                        success_list.append(url)
-                        counter += 1
+                    elif status.data.is_connected_or_pending:
+                        print(f"connection request sent successfully to {name}")
+                        write_succeeded([name])
+                        success_list.append(orig_url)
                         break
-
+        except Exception as e:
+            print(f"Exception occured: {e}")
         finally:
             print("Closing stagehand", flush=True)
             await stagehand.close()
@@ -310,17 +580,17 @@ def main() -> None:
                     cache_result(chosen_url, name)
                 else:
                     chosen_urls[str(uuid.uuid4())] = name
-
-    index = 0
-    while True:
-        if(index < len(LLM_VALUES)):
-            connected = asyncio.run(browser_time(chosen_urls, LLM_VALUES[index])) # returns list of urls
-            print(f"Succeeded on: {connected}")
-            write_succeeded(connected)
-            index += 1
-            for url in connected:
-                if chosen_urls.get(url) is None:
-                    chosen_urls.pop(url)
+    while chosen_urls:
+        connected = asyncio.run(browser_time(chosen_urls)) # returns list of urls
+        print(f"Succeeded on: {connected}")
+        if not connected:
+            print("No further connections completed on this run.")
+            break
+        for url in connected:
+            if url in chosen_urls:
+                print(f"Removing {url} from the search")
+                chosen_urls.pop(url)
+    print("All done! Big W gaming.")
 
 if __name__ == "__main__":
     main()
