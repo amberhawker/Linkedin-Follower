@@ -44,8 +44,6 @@ load_dotenv()
 HATZ_API_URL = "https://ai.hatz.ai/v1/chat/completions"
 HATZ_API_KEY = os.environ.get("HATZ_API_KEY", "")
 HATZ_MODEL = "anthropic.claude-haiku-4-5"
-BROWSERBASE_API_KEY = os.environ.get("BROWSERBASE_API_KEY", "")
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 
 ORG_NAME = "Organization"
 SKIP_COL = "Phone"
@@ -467,7 +465,7 @@ async def browser_time(url_list):
                 await asyncio.sleep(2)  # let LinkedIn's SPA fully settle
                 attempts = 0
                 while True:
-                    if attempts >= 10:
+                    if attempts >= 5:
                         print(f"URL: {target_url}, Name: {name} has FAILED.")
                         break
 
@@ -563,9 +561,13 @@ def main() -> None:
 
     results = {}
     chosen_urls = {} # {url: name}
+    finished_names = get_finished_names()
     for org in queries.keys():
         for guy in queries[org]:
             name = guy[0]
+            if name in finished_names:
+                print(f"Skipping: {name}, since it's already been done.")
+                continue
             query = guy[1]
             cache_url = check_cache(name)
             if cache_url:
