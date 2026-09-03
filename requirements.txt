@@ -1,0 +1,10 @@
+ddgs==9.15.0
+openai==3.7.0
+pandas==3.0.5
+pydantic==2.13.5
+python-dotenv==1.2.3
+Requests==2.34.2
+stagehand==4.0.2
+openpyxl
+stagehand
+openai

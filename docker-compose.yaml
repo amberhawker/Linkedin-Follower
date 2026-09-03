@@ -1,0 +1,6 @@
+services:
+  linkedin-follower:
+    build: .
+
+    volumes:
+      - ./data:/linkedin-follower/data
