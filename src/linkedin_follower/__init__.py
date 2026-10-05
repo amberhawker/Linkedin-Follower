@@ -14,3 +14,5 @@ def main() -> None:
             print("Skipping setup!")
     print("Let's get following!!")
     Enrich.main()
+
+main()
