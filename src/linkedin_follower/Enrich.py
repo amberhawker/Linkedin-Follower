@@ -575,8 +575,8 @@ def main() -> None:
                 chosen_urls[cache_url] = name
             else:
                 print(f"MISS cache for: {name}")
-
-                chosen_url = None
+                options = search_profile(engine, query)
+                chosen_url = chud_ai(options)
                 if chosen_url:
                     chosen_urls[chosen_url] = name
                     cache_result(chosen_url, name)
