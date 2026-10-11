@@ -1,7 +1,7 @@
-from linkedin_follower import setup
 import os, asyncio
 from dotenv import load_dotenv
-from linkedin_follower import hatz, Enrich
+
+from linkedin_follower import hatz, Enrich, setup
 
 load_dotenv()
 HATZ_API_URL = "https://ai.hatz.ai/v1/chat/completions"

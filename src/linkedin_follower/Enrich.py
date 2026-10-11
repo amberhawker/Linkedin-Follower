@@ -1,12 +1,6 @@
-import time, random
-import os, csv
-import asyncio
-import json
-import uuid
-import re
+import time, random, os, csv, asyncio, json, uuid, re
 
 from pathlib import Path
-from dotenv import load_dotenv
 from typing import List, Optional
 from collections import defaultdict
 import requests as re
@@ -25,7 +19,6 @@ class ConnectionStatus(BaseModel):
     hit_limit: bool = Field(description="true if weekly invitation limit modal or email verification popped up")
     action_taken: str = Field(description="sent_request, already_connected, hit_limit, or failed")
 
-load_dotenv()
 class Enrichinator:
     def __init__(self, hatz: HatzAdapter, org_name: str, skip_cols: list[str], break_name: str, suceed_list: str):
         self.hatz = hatz

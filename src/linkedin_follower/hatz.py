@@ -9,10 +9,8 @@ from stagehand._generated.models import (
     LLMToolUseContent,
     LLMMessageContentBlock,
 )
-import openai
-import json
+import openai, json, re
 import requests as rq
-import re
 
 from typing import List, Optional
 
