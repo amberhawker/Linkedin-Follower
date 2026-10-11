@@ -9,7 +9,7 @@ HATZ_API_KEY = os.environ.get("HATZ_API_KEY", "")
 HATZ_MODEL = "anthropic.claude-haiku-4-5"
 
 ORG_NAME = "Organization"
-SKIP_COL = "Phone"
+SKIP_COL = ["Phone"]
 BREAK_NAME = "Data Confidence"
 
 SUCEED_LIST = "./data/suceedlist.csv"

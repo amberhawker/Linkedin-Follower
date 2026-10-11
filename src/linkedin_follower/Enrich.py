@@ -27,10 +27,10 @@ class ConnectionStatus(BaseModel):
 
 load_dotenv()
 class Enrichinator:
-    def __init__(self, hatz: HatzAdapter, org_name: str, skip_col: str, break_name: str, suceed_list: str):
+    def __init__(self, hatz: HatzAdapter, org_name: str, skip_cols: list[str], break_name: str, suceed_list: str):
         self.hatz = hatz
         self.org_name = org_name
-        self.skip_col = skip_col
+        self.skip_cols = skip_cols
         self.break_name = break_name
         self.suceed_list = suceed_list
 
@@ -44,7 +44,7 @@ class Enrichinator:
 
             for colname, val in row.items():
                 if colname == self.org_name: continue
-                if colname == self.skip_col: continue
+                if colname in self.skip_cols: continue
                 if colname == self.break_name: break
                 
                 name = row[colname]
