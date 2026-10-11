@@ -9,6 +9,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 from typing import List, Optional
 from collections import defaultdict
+import requests as re
 
 import pandas as pd
 from ddgs import DDGS
